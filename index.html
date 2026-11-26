@@ -4,6 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#edf1ed">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon-192.png" type="image/png">
+<link rel="apple-touch-icon" href="icon-192.png">
 <title>Gym Tracker – האימונים שלי</title>
 <style>
 :root {
@@ -292,6 +295,22 @@ summary::-webkit-details-marker { display:none; }
   padding:8px; padding-inline-start:16px; background:#112b23; color:#f3f9ee;
   border-radius:14px; box-shadow:0 9px 26px #142f2240;
 }
+.order.done { background:#235443; color:#fff; }
+.workout-summary {
+  background:#fbfdf9; border:1px solid #a7c1ac; border-radius:13px; padding:12px 14px;
+}
+.workout-summary h2 { margin:0 0 8px; font-size:1rem; }
+.summary-stats { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px; }
+.summary-stats span { display:grid; align-content:start; gap:1px; font-size:.78rem; color:#526059; }
+.summary-stats strong { font-size:1.3rem; color:#162720; font-variant-numeric:tabular-nums; }
+.summary-stats small { font-size:.74rem; color:#285742; font-weight:650; }
+.summary-bests { margin:9px 0 0; padding:6px 9px; border-radius:8px; background:#f1f7d8; color:#3d4a10; font-size:.85rem; font-weight:700; }
+.backup-reminder {
+  display:flex; align-items:center; flex-wrap:wrap; gap:8px 10px; margin-block-start:12px; padding:10px 12px;
+  background:#fbf4e0; border:1px solid #e3c98f; border-radius:12px; color:#5a4215;
+}
+.backup-reminder p { flex:1 1 180px; margin:0; font-size:.88rem; }
+.backup-reminder .back { margin:0; }
 .rest-bar bdi { flex:1; font-size:1.6rem; font-weight:780; font-variant-numeric:tabular-nums; }
 .rest-bar button {
   min-height:44px; padding:4px 12px; border:1px solid #ffffff45; border-radius:9px;
@@ -1263,7 +1282,7 @@ function homeMarkup() {
     </div>
     <div class="hero-art" aria-hidden="true"><img src="${heroPhotoURL()}" alt=""></div>
   </section>
-  <section aria-labelledby="workout-heading">
+  ${backupReminderMarkup()}<section aria-labelledby="workout-heading">
     <div class="section-heading home-heading"><h2 id="workout-heading">בחירת אימון</h2></div>
     <div class="workout-grid">${cards}</div>
   </section>
@@ -1292,7 +1311,7 @@ function rowMarkup(row) {
   return `<details class="exercise ${group.tone}" data-row="${row.id}"${openedRows.has(row.id) ? ' open' : ''}>
     <summary>
       <span class="exercise-head">
-        <span class="order" aria-label="תרגיל ${row.order}">${row.order}</span>
+        ${orderBadge(row)}
         <span>
           <span class="exercise-title">${currentVariant(row).name}</span>
           <span class="tags">${tags.map(tag => `<span>${tag}</span>`).join('')}</span>
@@ -1319,6 +1338,40 @@ function rowMarkup(row) {
   </details>`;
 }
 
+function orderBadge(row) {
+  const done = rowSetsOn(row,dateToday()).length >= row.sets;
+  return `<span class="order${done ? ' done' : ''}" aria-label="תרגיל ${row.order}${done ? ', הושלם' : ''}">${done ? '✓' : row.order}</span>`;
+}
+
+// Live summary of today's sets for this workout; hidden until the first set.
+function workoutSummaryMarkup(workout) {
+  const date = dateToday();
+  const sets = workout.rows.reduce((n,row) => n + rowSetsOn(row,date).length,0);
+  if (!sets) return '<section class="workout-summary" data-workout-summary hidden></section>';
+  const done = workout.rows.filter(row => rowSetsOn(row,date).length >= row.sets).length;
+  const volume = sessionVolume(workout,date);
+  const before = previousSessionDate(workout,date);
+  const beforeVolume = before ? sessionVolume(workout,before) : 0;
+  const bests = workout.rows.flatMap(row => row.variants.filter(option =>
+    isPersonalBest(journal.lifts[row.id+':'+option.id] ?? [],date,option.id)).map(option => option.name));
+  return `<section class="workout-summary" data-workout-summary aria-live="polite">
+    <h2>האימון היום</h2>
+    <div class="summary-stats">
+      <span><strong><bdi>${done}/${workout.rows.length}</bdi></strong>תרגילים הושלמו</span>
+      <span><strong><bdi>${sets}</bdi></strong>סטים</span>
+      <span><strong><bdi>${formatNumber.format(volume)}</bdi></strong>נפח (ק״ג × חזרות)${beforeVolume
+        ? `<small><bdi>${Math.round(volume/beforeVolume*100)}%</bdi> מהאימון הקודם</small>` : ''}</span>
+    </div>
+    ${bests.length ? `<p class="summary-bests">שיא חדש · ${bests.join(' · ')}</p>` : ''}
+  </section>`;
+}
+
+function refreshWorkoutProgress(card,row) {
+  card.querySelector('.order').outerHTML = orderBadge(row);
+  const summary = main.querySelector('[data-workout-summary]');
+  if (summary) summary.outerHTML = workoutSummaryMarkup(workoutsById.get(row.workout));
+}
+
 function workoutMarkup(workout) {
   const mainRows = workout.rows.filter(row => !row.superset);
   const pairedRows = workout.rows.filter(row => row.superset);
@@ -1328,6 +1381,7 @@ function workoutMarkup(workout) {
       <h1><bdi>${workout.name}</bdi></h1><p>${workout.focus} · ${workout.rows.length} תרגילים</p>
     </header>
     <section class="exercise-list" aria-label="סדר התרגילים">
+      ${workoutSummaryMarkup(workout)}
       ${mainRows.map(rowMarkup).join('')}
       ${pairedRows.length ? `<section class="superset" aria-labelledby="superset-heading">
         <h2 id="superset-heading">סופר־סט ידיים · ${pairedRows[0].sets} סבבים</h2>
@@ -1592,11 +1646,49 @@ function setsOf(record) {
   return record ? record.sets ?? [{weight:record.weight,reps:record.reps}] : [];
 }
 
+// True when `set` is harder than `best`: more weight, or same weight and more reps.
+// On assisted machines less assistance is the harder set.
+function beats(best,set,optionId) {
+  if (set.weight !== best.weight) return assistedLoads.has(optionId) ? set.weight < best.weight : set.weight > best.weight;
+  return (set.reps ?? 0) > (best.reps ?? 0);
+}
+
 function liftRecord(date,sets,optionId) {
-  // Less assistance is the harder set.
-  const heavier = assistedLoads.has(optionId) ? (a,b) => b.weight < a.weight : (a,b) => b.weight > a.weight;
-  const top = sets.reduce((a,b) => heavier(a,b) || (b.weight === a.weight && (b.reps ?? 0) > (a.reps ?? 0)) ? b : a);
+  const top = sets.reduce((a,b) => beats(a,b,optionId) ? b : a);
   return {date,weight:top.weight,reps:top.reps,sets};
+}
+
+// The day's top set beats every earlier day. A first session is not a record.
+function isPersonalBest(records,date,optionId) {
+  const today = records.find(r => r.date === date);
+  const earlier = records.filter(r => r.date < date);
+  return Boolean(today && earlier.length && earlier.every(r => beats(r,today,optionId)));
+}
+
+function setsOn(key,date) {
+  return setsOf(journal.lifts[key]?.find(r => r.date === date));
+}
+
+// Sets logged on `date` across every variant of a program row.
+function rowSetsOn(row,date) {
+  return row.variants.flatMap(option => setsOn(row.id+':'+option.id,date));
+}
+
+// ponytail: weight × reps as entered (per dumbbell for dumbbell lifts). Assisted lifts are left out.
+function sessionVolume(workout,date) {
+  let volume = 0;
+  for (const row of workout.rows) {
+    for (const option of row.variants) {
+      if (assistedLoads.has(option.id)) continue;
+      for (const set of setsOn(row.id+':'+option.id,date)) volume += set.weight*(set.reps ?? 0);
+    }
+  }
+  return volume;
+}
+
+function previousSessionDate(workout,date) {
+  return workout.rows.flatMap(row => row.variants.flatMap(option =>
+    (journal.lifts[row.id+':'+option.id] ?? []).map(r => r.date))).filter(d => d < date).sort().at(-1);
 }
 
 function withSet(records,date,set,optionId) {
@@ -1865,6 +1957,7 @@ main.addEventListener('submit',event => {
     const card = form.closest('[data-row]');
     renderTracking(card,target.row,date);
     card.querySelector('.previous-lift').innerHTML = lastSetMarkup(target.row);
+    refreshWorkoutProgress(card,target.row);
     const updated = card.querySelector('[data-log-load]');
     updated.querySelector('.form-message').textContent = saved
       ? 'הסט נשמר.' : 'הסט נשמר להפעלה הנוכחית. אפשר לייצא גיבוי במסך ההתקדמות.';
@@ -1902,6 +1995,7 @@ main.addEventListener('click',event => {
   const card = form.closest('[data-row]');
   renderTracking(card,target.row,date);
   card.querySelector('.previous-lift').innerHTML = lastSetMarkup(target.row);
+    refreshWorkoutProgress(card,target.row);
   card.querySelector('[data-log-load] [type="submit"]').focus({preventScroll:true});
 });
 
@@ -1978,7 +2072,25 @@ function mergeBackup(downloaded) {
   });
 }
 
+const lastBackupKey = 'my-workouts.last-backup.v1';
+const backupEveryDays = 7;
+
+// Shown on home when there is data and no export in the last week.
+function backupReminderMarkup() {
+  if (!journal.body.length && !Object.keys(journal.lifts).length) return '';
+  let last = null;
+  try { last = localStorage.getItem(lastBackupKey); } catch {}
+  const days = validDate(last) ? Math.round((Date.parse(dateToday()) - Date.parse(last))/864e5) : null;
+  if (days !== null && days < backupEveryDays) return '';
+  return `<div class="backup-reminder" role="status">${uiIcon('clock')}
+    <p>${days === null ? 'עוד לא נשמר גיבוי.' : `הגיבוי האחרון לפני <bdi>${days}</bdi> ימים.`} הנתונים שמורים רק בדפדפן הזה.</p>
+    <button type="button" class="back" data-export>גיבוי עכשיו</button>
+  </div>`;
+}
+
 function downloadBackup() {
+  try { localStorage.setItem(lastBackupKey,dateToday()); } catch {}
+  if (screen.mode === 'workout' && !screen.id) main.querySelector('.backup-reminder')?.remove();
   const blob = new Blob([JSON.stringify(journal,null,2)],{type:'application/json'});
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a');
@@ -2415,6 +2527,9 @@ main.addEventListener('change',event => {
 });
 
 render();
+// Asks the browser not to evict saved data under storage pressure; granted readily for installed apps.
+navigator.storage?.persist?.().catch(() => {});
+if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
 document.querySelector('.mode').hidden = false;
 document.body.dataset.ready = '';
 </script>

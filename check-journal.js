@@ -19,11 +19,13 @@ function boot(store, {broken = false} = {}) {
   const ctx = {
     document: {querySelector: () => el(), querySelectorAll: () => [], getElementById: () => null,
       createElement: () => el(), body: el()},
-    window: {addEventListener() {}, scrollTo() {}, scrollY: 0}, history: {replaceState() {}}, localStorage, Intl
+    window: {addEventListener() {}, scrollTo() {}, scrollY: 0}, history: {replaceState() {}}, localStorage, Intl,
+    navigator: {}, location: {protocol: 'file:'}
   };
   vm.createContext(ctx);
   vm.runInContext(script + `;globalThis.T = {saveJournal, normalizeJournal, withSet, withoutSet, nextSetGuess,
-    restSeconds, rowsById, get journal() { return journal; }}`, ctx);
+    restSeconds, rowsById, workoutsById, isPersonalBest, sessionVolume, previousSessionDate, rowSetsOn,
+    backupReminderMarkup, dateToday, get journal() { return journal; }}`, ctx);
   return ctx.T;
 }
 
@@ -124,5 +126,49 @@ const D1 = '2026-11-20', D2 = '2026-11-24';
 // 11. Rest: 6-8 rep exercises rest 2 minutes, higher-rep ones 90 seconds.
 assert.equal(app.restSeconds(app.rowsById.get('incline-db')), 120);
 assert.equal(app.restSeconds(app.rowsById.get('lateral')), 90);
+
+// ---- Workout summary ----
+const set = (weight, reps) => ({weight, reps});
+
+// 12. Personal best: beats every earlier day; first session and ties are not records; assisted inverts.
+{
+  const r = [{date: D1, weight: 35, reps: 8}, {date: D2, weight: 35, reps: 9}];
+  assert.equal(app.isPersonalBest(r, D2, 'inclineDb'), true);
+  assert.equal(app.isPersonalBest([{date: D2, weight: 35, reps: 8}], D2, 'inclineDb'), false);
+  assert.equal(app.isPersonalBest([{date: D1, weight: 35, reps: 8}, {date: D2, weight: 35, reps: 8}], D2, 'inclineDb'), false);
+  assert.equal(app.isPersonalBest([{date: D1, weight: 30, reps: 8}, {date: D2, weight: 25, reps: 8}], D2, 'assistPull'), true);
+  assert.equal(app.isPersonalBest(r, '2026-11-25', 'inclineDb'), false); // nothing logged that day
+}
+
+// 13. Volume sums weight x reps across variants, skips assisted lifts; previous session date per workout.
+{
+  const store = {};
+  const a = boot(store);
+  a.saveJournal(s => {
+    s.lifts['incline-db:inclineDb'] = a.withSet(a.withSet([], D2, set(35, 8), 'inclineDb'), D2, set(30, 10), 'inclineDb');
+    s.lifts['incline-db:inclineBarbell'] = a.withSet([], D2, set(60, 5), 'inclineBarbell');
+    s.lifts['wide-pulldown:assistPull'] = a.withSet([], D2, set(30, 8), 'assistPull');
+    s.lifts['flat-smith:flatSmith'] = a.withSet([], D1, set(50, 10), 'flatSmith');
+  });
+  assert.equal(a.sessionVolume(a.workoutsById.get('push'), D2), 35 * 8 + 30 * 10 + 60 * 5);
+  assert.equal(a.sessionVolume(a.workoutsById.get('pull'), D2), 0);
+  assert.equal(a.previousSessionDate(a.workoutsById.get('push'), D2), D1);
+  assert.equal(a.previousSessionDate(a.workoutsById.get('push'), D1), undefined);
+  assert.equal(a.rowSetsOn(a.rowsById.get('incline-db'), D2).length, 3);
+}
+
+// 14. Backup reminder: hidden with no data or a recent backup; shown when never or a week+ ago.
+{
+  const store = {};
+  const a = boot(store);
+  assert.equal(a.backupReminderMarkup(), '');
+  a.saveJournal(s => { s.body = [{date: D1, weight: 80}]; });
+  assert.match(a.backupReminderMarkup(), /עוד לא נשמר גיבוי/);
+  const daysAgo = n => new Date(Date.parse(a.dateToday()) - n * 864e5).toISOString().slice(0, 10);
+  store['my-workouts.last-backup.v1'] = daysAgo(6);
+  assert.equal(a.backupReminderMarkup(), '');
+  store['my-workouts.last-backup.v1'] = daysAgo(7);
+  assert.match(a.backupReminderMarkup(), /לפני <bdi>7<\/bdi> ימים/);
+}
 
 console.log('journal checks passed');
