@@ -279,6 +279,24 @@ summary::-webkit-details-marker { display:none; }
   min-height:44px; padding:3px 7px; border:0; background:transparent; color:#285b49; text-decoration:underline; font-weight:700;
 }
 .equipment-shortcut { margin:4px 0; }
+.set-list { list-style:none; margin:8px 0 0; padding:0; display:grid; gap:4px; }
+.set-list li {
+  display:flex; align-items:center; gap:10px; padding-inline:10px 4px;
+  background:#fffefa; border:1px solid #dce7d6; border-radius:8px;
+}
+.set-list li span { color:#4b5f55; font-size:.85rem; min-width:40px; }
+.set-list li bdi { flex:1; font-weight:750; font-variant-numeric:tabular-nums; }
+.rest-bar {
+  position:fixed; z-index:9; inset-inline:12px; inset-block-end:calc(var(--nav-space,0px) + 8px);
+  max-width:420px; margin-inline:auto; display:flex; align-items:center; gap:10px;
+  padding:8px; padding-inline-start:16px; background:#112b23; color:#f3f9ee;
+  border-radius:14px; box-shadow:0 9px 26px #142f2240;
+}
+.rest-bar bdi { flex:1; font-size:1.6rem; font-weight:780; font-variant-numeric:tabular-nums; }
+.rest-bar button {
+  min-height:44px; padding:4px 12px; border:1px solid #ffffff45; border-radius:9px;
+  background:transparent; color:inherit; font-weight:700;
+}
 @media(max-width:620px) {
   .progress-grid { grid-template-columns:1fr; }
   .tracking-form .form-fields { grid-template-columns:repeat(2,minmax(0,1fr)); }
@@ -1216,7 +1234,7 @@ function lastSetMarkup(row) {
   const option = currentVariant(row);
   const latest = journal.lifts[row.id + ':' + option.id]?.at(-1);
   if (!latest) return '';
-  return `${uiIcon('clock')}<span>אחרון <bdi>${formatNumber.format(latest.weight)}</bdi> ${loadSpec(option.id).axis}${latest.reps ? ` · <bdi>${latest.reps}</bdi> חזרות` : ''}</span>`;
+  return `${uiIcon('clock')}<span>אחרון ${setsText(latest)} ${loadSpec(option.id).axis}</span>`;
 }
 
 document.querySelector('[data-home]').addEventListener('click',event => {
@@ -1547,10 +1565,13 @@ function normalizeJournal(raw) {
   // Unknown keys are kept: an exercise renamed or removed in a later version must not erase its history.
   for (const [key,input] of Object.entries(raw.lifts ?? {})) {
     if (!/^[\w-]+:\w+$/.test(key) || !Array.isArray(input)) continue;
-    const records = input.reduce((values,entry) =>
-      entry && validDate(entry.date) && numberIn(entry.weight,0,1500) ?
-        upsert(values,{date:entry.date,weight:entry.weight,
-          reps:Number.isInteger(entry.reps) && numberIn(entry.reps,1,999) ? entry.reps : null}) : values,[]);
+    const optionId = key.split(':')[1];
+    const records = input.reduce((values,entry) => {
+      if (!entry || !validDate(entry.date)) return values;
+      const sets = Array.isArray(entry.sets) ? entry.sets.filter(set => set && numberIn(set.weight,0,1500)).map(cleanSet) : [];
+      if (sets.length) return upsert(values,liftRecord(entry.date,sets,optionId));
+      return numberIn(entry.weight,0,1500) ? upsert(values,{date:entry.date,...cleanSet(entry)}) : values;
+    },[]);
     if (records.length) lifts[key] = records;
   }
   const choices = {};
@@ -1559,6 +1580,39 @@ function normalizeJournal(raw) {
     if (row.variants.some(option => option.id === id)) choices[row.id] = id;
   }
   return {version:1, height:numberIn(raw.height,50,260) ? raw.height : null, body, lifts, choices};
+}
+
+function cleanSet(set) {
+  return {weight:set.weight, reps:Number.isInteger(set.reps) && numberIn(set.reps,1,999) ? set.reps : null};
+}
+
+// A day's record keeps every set, plus the top set as weight/reps for charts and history.
+// Records saved before sets existed have no `sets`; they count as one set.
+function setsOf(record) {
+  return record ? record.sets ?? [{weight:record.weight,reps:record.reps}] : [];
+}
+
+function liftRecord(date,sets,optionId) {
+  // Less assistance is the harder set.
+  const heavier = assistedLoads.has(optionId) ? (a,b) => b.weight < a.weight : (a,b) => b.weight > a.weight;
+  const top = sets.reduce((a,b) => heavier(a,b) || (b.weight === a.weight && (b.reps ?? 0) > (a.reps ?? 0)) ? b : a);
+  return {date,weight:top.weight,reps:top.reps,sets};
+}
+
+function withSet(records,date,set,optionId) {
+  return upsert(records,liftRecord(date,[...setsOf(records.find(r => r.date === date)),set],optionId));
+}
+
+function withoutSet(records,date,index,optionId) {
+  const sets = setsOf(records.find(r => r.date === date)).filter((_,i) => i !== index);
+  return sets.length ? upsert(records,liftRecord(date,sets,optionId)) : records.filter(r => r.date !== date);
+}
+
+// Next set defaults to the same set from the previous session, else repeats today's last set.
+function nextSetGuess(records,date) {
+  const done = setsOf(records.find(r => r.date === date));
+  const before = setsOf(records.filter(r => r.date < date).at(-1));
+  return before[done.length] ?? done.at(-1) ?? before.at(-1);
 }
 
 function emptyJournal() {
@@ -1607,26 +1661,37 @@ function displayDate(date) {
   return formatDate.format(new Date(date+'T00:00:00Z'));
 }
 
-function loadFormMarkup(row,option) {
+function setsText(record) {
+  return setsOf(record).map(set =>
+    `<bdi dir="ltr">${formatNumber.format(set.weight)}${set.reps ? '×' + set.reps : ''}</bdi>`).join(' · ');
+}
+
+function loadFormMarkup(row,option,date) {
   const key = row.id+':'+option.id;
-  const latest = journal.lifts[key]?.at(-1);
+  const records = journal.lifts[key] ?? [];
+  const done = setsOf(records.find(r => r.date === date));
+  const previous = records.filter(r => r.date < date).at(-1);
+  const guess = nextSetGuess(records,date);
   const spec = loadSpec(option.id);
   return `<form class="tracking-form" data-log-load="${key}">
-    <div class="form-heading"><h3>משקל שבוצע</h3>${latest ? `<button type="button" class="text-button" data-progress-key="${key}">היסטוריה</button>` : ''}</div>
-    ${latest ? `<p class="saved-detail">נרשם לאחרונה: <bdi>${formatNumber.format(latest.weight)}</bdi> ${spec.axis}${latest.reps ? ` · ${latest.reps} חזרות` : ''} · ${displayDate(latest.date)}</p>` : ''}
+    <div class="form-heading"><h3>סטים · <bdi>${done.length}/${row.sets}</bdi></h3>${records.length ? `<button type="button" class="text-button" data-progress-key="${key}">היסטוריה</button>` : ''}</div>
+    ${previous ? `<p class="saved-detail">פעם שעברה (${displayDate(previous.date)}): ${setsText(previous)} ${spec.axis}</p>` : ''}
+    ${done.length ? `<ol class="set-list">${done.map((set,i) => `<li><span>סט ${i+1}</span>
+      <bdi dir="ltr">${formatNumber.format(set.weight)}${set.reps ? ' × ' + set.reps : ''}</bdi>
+      <button type="button" class="text-button" data-delete-set="${i}" aria-label="מחיקת סט ${i+1}">מחיקה</button></li>`).join('')}</ol>` : ''}
     <div class="form-fields">
-      <label>${spec.field}<input name="weight" type="number" min="0" max="1500" step="any" inputmode="decimal" required value="${latest?.weight ?? ''}"></label>
-      <label>חזרות בסט (רשות)<input name="reps" type="number" min="1" max="999" step="1" inputmode="numeric" value="${latest?.reps ?? ''}"></label>
-      <label>תאריך<input name="date" type="date" required value="${dateToday()}"></label>
-      <button class="primary-action" type="submit">שמירת משקל</button>
+      <label>${spec.field}<input name="weight" type="number" min="0" max="1500" step="any" inputmode="decimal" required value="${guess?.weight ?? ''}"></label>
+      <label>חזרות<input name="reps" type="number" min="1" max="999" step="1" inputmode="numeric" required value="${guess?.reps ?? ''}"></label>
+      <label>תאריך<input name="date" type="date" required max="${dateToday()}" value="${date}"></label>
+      <button class="primary-action" type="submit">שמירת סט ${done.length+1}</button>
     </div>
     ${spec.note ? `<p class="saved-detail">${spec.note}</p>` : ''}
     <p class="form-message" role="status"></p>
   </form>`;
 }
 
-function renderTracking(card,row) {
-  card.querySelector('.tracking-slot').innerHTML = loadFormMarkup(row,currentVariant(row));
+function renderTracking(card,row,date = dateToday()) {
+  card.querySelector('.tracking-slot').innerHTML = loadFormMarkup(row,currentVariant(row),date);
   const notes = card.querySelector('.notes');
   if (notes) {
     const note = notes.querySelector('[data-default-note]');
@@ -1647,8 +1712,8 @@ function historyMarkup(records,withReps) {
   if (!records.length) return '';
   const shown = records.slice(-8).reverse();
   return `<details class="history"><summary>מדידות אחרונות (${shown.length})</summary>
-    <table><thead><tr><th>תאריך</th><th>משקל</th>${withReps ? '<th>חזרות</th>' : ''}</tr></thead>
-    <tbody>${shown.map(record => `<tr><td>${displayDate(record.date)}</td><td><bdi>${formatNumber.format(record.weight)}</bdi></td>${withReps ? `<td>${record.reps ?? '–'}</td>` : ''}</tr>`).join('')}</tbody></table>
+    <table><thead><tr><th>תאריך</th><th>${withReps ? 'סט מוביל' : 'משקל'}</th>${withReps ? '<th>כל הסטים</th>' : ''}</tr></thead>
+    <tbody>${shown.map(record => `<tr><td>${displayDate(record.date)}</td><td><bdi>${formatNumber.format(record.weight)}</bdi></td>${withReps ? `<td>${setsText(record)}</td>` : ''}</tr>`).join('')}</tbody></table>
     </details>`;
 }
 
@@ -1685,7 +1750,7 @@ function progressMarkup() {
           <div class="form-fields">
             <label>משקל גוף (ק״ג)<input name="weight" type="number" min="1" max="700" step="any" inputmode="decimal"></label>
             <label>גובה (ס״מ)<input name="height" type="number" min="50" max="260" step="any" inputmode="decimal" value="${journal.height ?? ''}"></label>
-            <label>תאריך שקילה<input name="date" type="date" required value="${dateToday()}"></label>
+            <label>תאריך שקילה<input name="date" type="date" required max="${dateToday()}" value="${dateToday()}"></label>
             <button class="primary-action" type="submit">שמירת מדידה</button>
           </div>
         </form>
@@ -1788,25 +1853,23 @@ main.addEventListener('submit',event => {
   const date = data.get('date');
   const load = data.get('weight');
   const weight = load === '' ? null : Number(load);
-  if (!validDate(date)) return;
+  if (!validDate(date) || date > dateToday()) return;
   if (form.hasAttribute('data-log-load')) {
     const key = form.dataset.logLoad;
     const target = validLifts.get(key);
-    if (!target || !numberIn(weight,0,1500)) return;
-    const reps = data.get('reps') === '' ? null : Number(data.get('reps'));
+    const reps = Number(data.get('reps'));
+    if (!target || !numberIn(weight,0,1500) || !Number.isInteger(reps) || !numberIn(reps,1,999)) return;
     const saved = saveJournal(state => {
-      state.lifts[key] = upsert(state.lifts[key] ?? [],{date,weight,reps});
+      state.lifts[key] = withSet(state.lifts[key] ?? [],date,{weight,reps},target.option.id);
     });
     const card = form.closest('[data-row]');
-    renderTracking(card,target.row);
+    renderTracking(card,target.row,date);
     card.querySelector('.previous-lift').innerHTML = lastSetMarkup(target.row);
     const updated = card.querySelector('[data-log-load]');
-    updated.elements.date.value = date;
-    updated.elements.weight.value = weight;
-    updated.elements.reps.value = reps ?? '';
     updated.querySelector('.form-message').textContent = saved
-      ? 'המשקל נשמר. שמירה חוזרת באותו תאריך מעדכנת את הרשומה.' : 'המשקל נשמר להפעלה הנוכחית. אפשר לייצא גיבוי במסך ההתקדמות.';
+      ? 'הסט נשמר.' : 'הסט נשמר להפעלה הנוכחית. אפשר לייצא גיבוי במסך ההתקדמות.';
     updated.querySelector('[type="submit"]').focus({preventScroll:true});
+    startRest(restSeconds(target.row));
   } else {
     const height = Number(data.get('height'));
     if (!numberIn(height,50,260) && !numberIn(weight,1,700)) {
@@ -1822,6 +1885,81 @@ main.addEventListener('submit',event => {
     render();
     main.querySelector('[data-log-body] button').focus({preventScroll:true});
   }
+});
+
+main.addEventListener('click',event => {
+  const button = event.target.closest('[data-delete-set]');
+  if (!button) return;
+  const form = button.closest('[data-log-load]');
+  const key = form.dataset.logLoad;
+  const target = validLifts.get(key);
+  const date = form.elements.date.value;
+  saveJournal(state => {
+    const remaining = withoutSet(state.lifts[key] ?? [],date,Number(button.dataset.deleteSet),target.option.id);
+    if (remaining.length) state.lifts[key] = remaining;
+    else delete state.lifts[key];
+  });
+  const card = form.closest('[data-row]');
+  renderTracking(card,target.row,date);
+  card.querySelector('.previous-lift').innerHTML = lastSetMarkup(target.row);
+  card.querySelector('[data-log-load] [type="submit"]').focus({preventScroll:true});
+});
+
+// Picking another date shows that day's sets and the session before it.
+main.addEventListener('change',event => {
+  const field = event.target;
+  const form = field.closest('[data-log-load]');
+  if (!form || field.name !== 'date' || !validDate(field.value) || field.value > dateToday()) return;
+  const card = form.closest('[data-row]');
+  renderTracking(card,validLifts.get(form.dataset.logLoad).row,field.value);
+  card.querySelector('[data-log-load] [name="date"]').focus({preventScroll:true});
+});
+
+const restBar = document.createElement('div');
+restBar.className = 'rest-bar';
+restBar.hidden = true;
+restBar.setAttribute('role','timer');
+restBar.innerHTML = `<span>מנוחה</span><bdi dir="ltr" data-rest-time></bdi>
+  <button type="button" data-rest-add>+30 שנ׳</button><button type="button" data-rest-stop>סיום</button>`;
+document.body.append(restBar);
+let restEnd = 0;
+let restTick = 0;
+
+// Heavy sets (bottom of rep range up to 8) get longer rest.
+function restSeconds(row) {
+  return parseInt(row.reps,10) <= 8 ? 120 : 90;
+}
+
+// ponytail: deadline-based, so a backgrounded tab shows the right time on return.
+// No alert while the screen is off; that needs a service worker with notifications.
+function startRest(seconds) {
+  restEnd = Date.now() + seconds*1000;
+  restBar.hidden = false;
+  clearInterval(restTick);
+  restTick = setInterval(updateRest,250);
+  updateRest();
+}
+
+function updateRest() {
+  const left = Math.ceil((restEnd - Date.now())/1000);
+  if (left <= 0) {
+    stopRest();
+    navigator.vibrate?.([300,150,300]);
+    return;
+  }
+  restBar.querySelector('[data-rest-time]').textContent = Math.floor(left/60) + ':' + String(left%60).padStart(2,'0');
+}
+
+function stopRest() {
+  clearInterval(restTick);
+  restBar.hidden = true;
+}
+
+restBar.addEventListener('click',event => {
+  if (event.target.closest('[data-rest-add]')) {
+    restEnd += 30000;
+    updateRest();
+  } else if (event.target.closest('[data-rest-stop]')) stopRest();
 });
 
 function mergeBackup(downloaded) {
