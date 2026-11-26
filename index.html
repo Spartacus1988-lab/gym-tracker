@@ -1513,6 +1513,7 @@ const journalKey = 'my-workouts.journal.v1';
 const validLifts = new Map(rows.flatMap(row => row.variants.map(option =>
   [row.id + ':' + option.id,{row,option}])));
 let storageAvailable = true;
+let journalParked = false;
 let journal = readJournal();
 let progressKey = '';
 let lastJournalMessage = '';
@@ -1543,9 +1544,9 @@ function normalizeJournal(raw) {
     entry && validDate(entry.date) && numberIn(entry.weight,1,700) ?
       upsert(records,{date:entry.date,weight:entry.weight}) : records,[]) : [];
   const lifts = {};
-  for (const key of validLifts.keys()) {
-    const input = raw.lifts?.[key];
-    if (!Array.isArray(input)) continue;
+  // Unknown keys are kept: an exercise renamed or removed in a later version must not erase its history.
+  for (const [key,input] of Object.entries(raw.lifts ?? {})) {
+    if (!/^[\w-]+:\w+$/.test(key) || !Array.isArray(input)) continue;
     const records = input.reduce((values,entry) =>
       entry && validDate(entry.date) && numberIn(entry.weight,0,1500) ?
         upsert(values,{date:entry.date,weight:entry.weight,
@@ -1560,27 +1561,42 @@ function normalizeJournal(raw) {
   return {version:1, height:numberIn(raw.height,50,260) ? raw.height : null, body, lifts, choices};
 }
 
+function emptyJournal() {
+  return {version:1,height:null,body:[],lifts:{},choices:{}};
+}
+
+// Throws only when storage itself is inaccessible. Unreadable data is moved aside, never overwritten.
+function loadStoredJournal() {
+  const value = localStorage.getItem(journalKey);
+  if (!value) return emptyJournal();
+  try {
+    return normalizeJournal(JSON.parse(value));
+  } catch {
+    localStorage.setItem(journalKey + '.unreadable.' + Date.now(),value);
+    localStorage.removeItem(journalKey);
+    journalParked = true;
+    return emptyJournal();
+  }
+}
+
 function readJournal() {
   try {
-    const value = localStorage.getItem(journalKey);
-    return value ? normalizeJournal(JSON.parse(value)) : {version:1,height:null,body:[],lifts:{},choices:{}};
+    return loadStoredJournal();
   } catch {
     storageAvailable = false;
-    return {version:1,height:null,body:[],lifts:{},choices:{}};
+    return emptyJournal();
   }
 }
 
 function saveJournal(update) {
   if (storageAvailable) {
-    try {
-      const raw = localStorage.getItem(journalKey);
-      if (raw) journal = normalizeJournal(JSON.parse(raw));
-    } catch { storageAvailable = false; }
+    try { journal = loadStoredJournal(); } catch { storageAvailable = false; }
   }
   update(journal);
+  // ponytail: once storage failed, stay session-only; writing later could overwrite data we never read.
+  if (!storageAvailable) return false;
   try {
     localStorage.setItem(journalKey,JSON.stringify(journal));
-    storageAvailable = true;
   } catch { storageAvailable = false; }
   return storageAvailable;
 }
@@ -1690,7 +1706,7 @@ function progressMarkup() {
     <section class="progress-card backup-card" aria-label="שמירת גיבוי">
       <div><h2>הנתונים שלי</h2><p class="saved-detail">הנתונים נשמרים בדפדפן במכשיר הזה. קובץ גיבוי מאפשר להעביר אותם למכשיר אחר.</p></div>
       <div class="backup-actions"><button type="button" class="back" data-export>ייצוא גיבוי</button><button type="button" class="back" data-import>ייבוא גיבוי</button><input type="file" accept="application/json,.json" data-backup-file hidden></div>
-      <p class="form-message" role="status" data-journal-message>${lastJournalMessage || (storageAvailable ? '' : 'השמירה בדפדפן אינה זמינה כרגע. אפשר לייצא גיבוי לפני סגירת האפליקציה.')}</p>
+      <p class="form-message" role="status" data-journal-message>${lastJournalMessage || (journalParked ? 'נמצאו נתונים שמורים שלא ניתן היה לקרוא. הם הועברו הצידה ולא נמחקו. ' : '') + (storageAvailable ? '' :'השמירה בדפדפן אינה זמינה כרגע. אפשר לייצא גיבוי לפני סגירת האפליקציה.')}</p>
     </section>`;
 }
 
